@@ -1,6 +1,14 @@
 # PTKB1
 CANbus Keyboard using an Arduino Nano and MCP2515
 
+Thank you for your interest in this PT Motorsport Arduino project! We’re very excited to be able to share this project with you.
+
+Projects like these are made possible by your support through purchases on the PT Motorsport AU website.
+
+www.ptmotorsport.com.au
+
+Thank you for your support! We greatly appreciate you spreading the word about our products and services to your fellow motorsport enthusiasts.
+
 # Hardware
 This code is writen to support the following hardware
  - Arduino Nano
@@ -16,7 +24,6 @@ Features that are setup include
 - LEDs light up according to received CAN messages
 - Change CAN Speed according to received CAN messages (after reboot)
 - Change backlight LED birghtness according to received CAN messages
-
 
 
 # Licence
