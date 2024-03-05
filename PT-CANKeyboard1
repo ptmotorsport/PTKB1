@@ -1,0 +1,169 @@
+#include <mcp2515.h>
+#include <Adafruit_NeoPixel.h>
+#include <EEPROM.h>
+
+#define CONFIG_ADDRESS 0
+
+#define NUM_PIXELS 8
+#define NEOPIXEL_PIN 4
+
+#define BASE_CAN_ID 0x015
+#define TRANSMIT_OFFSET 0x180
+#define RECEIVE_OFFSET 0x200
+#define BRIGHTNESS_CONTROL_OFFSET 0x400
+#define BACKLIGHT_CONTROL_OFFSET 0x500
+#define CAN_SPEED_CONTROL_OFFSET 0x600
+
+#define CAN0_INT 2                              // Set INT to pin 2
+
+struct can_frame canMsg;
+MCP2515 mcp2515(10);
+Adafruit_NeoPixel strip(NUM_PIXELS, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
+const int buttonPins[] = {3, 5, 6, 7, 8, 9, A3, A4};
+const int numButtons = sizeof(buttonPins) / sizeof(int);
+
+byte tickTimer = 0;
+byte lastButtonStates = 0;
+unsigned long lastUpdateTime = 0;
+byte backlightBrightness = 20; // Initial backlight brightness (8% of 255)
+
+struct Config {
+  byte brightness;
+  byte backlightBrightness;
+  byte canSpeed;
+};
+
+// Declare a global variable of type Config
+Config config;
+bool configChanged = false;
+
+void setup() {
+    Serial.begin(9600); // Start the serial communication with the baud rate of 9600
+    
+  for (int i = 0; i < numButtons; i++) {
+    pinMode(buttonPins[i], INPUT_PULLUP);
+  }
+
+  SPI.begin();
+  mcp2515.reset();
+  
+
+  canMsg.can_id  = BASE_CAN_ID + TRANSMIT_OFFSET;
+  canMsg.can_dlc = 5;
+
+  EEPROM.get(CONFIG_ADDRESS, config);
+
+  Serial.println("Config loaded from EEPROM:");
+  Serial.print("Brightness: ");
+  Serial.println(config.brightness);
+  Serial.print("Backlight Brightness: ");
+  Serial.println(config.backlightBrightness);
+  Serial.print("CAN Speed: ");
+  Serial.println(config.canSpeed);
+
+  switch (config.canSpeed) {
+    case 0x00: mcp2515.setBitrate(CAN_1000KBPS, MCP_8MHZ); break;
+    case 0x01: mcp2515.setBitrate(CAN_125KBPS, MCP_8MHZ); break;
+    case 0x02: mcp2515.setBitrate(CAN_500KBPS, MCP_8MHZ); break;
+    case 0x03: mcp2515.setBitrate(CAN_250KBPS, MCP_8MHZ); break;
+    case 0x04: mcp2515.setBitrate(CAN_125KBPS, MCP_8MHZ); break;
+    case 0x05: mcp2515.setBitrate(CAN_125KBPS, MCP_8MHZ); break;
+    case 0x06: mcp2515.setBitrate(CAN_125KBPS, MCP_8MHZ); break;
+    case 0x07: mcp2515.setBitrate(CAN_125KBPS, MCP_8MHZ); break;
+    default: mcp2515.setBitrate(CAN_1000KBPS, MCP_8MHZ); break; // Default to 1000kbps if the stored value is not recognized
+  }
+
+mcp2515.setNormalMode();
+
+    strip.begin();
+  strip.setBrightness(config.brightness);
+  backlightBrightness = config.backlightBrightness;
+  strip.fill(strip.Color(backlightBrightness, backlightBrightness, backlightBrightness));
+  strip.show();
+
+// Startup animation
+rainbow(10); // Start with a rainbow animation
+}
+
+void rainbow(int wait) {
+  for(long firstPixelHue = 0; firstPixelHue < 5*65536; firstPixelHue += 256) {
+    for(int i=0; i<strip.numPixels(); i++) { // For each pixel in strip...
+      int pixelHue = firstPixelHue + (i * 65536L / strip.numPixels());
+      strip.setPixelColor(i, strip.gamma32(strip.ColorHSV(pixelHue)));
+    }
+    strip.show(); // Update strip with new contents
+    delay(wait);  // Pause for a moment
+  }
+}
+
+void loop() {
+  byte buttonStates = 0;
+
+  for (int i = 0; i < numButtons; i++) {
+    if (digitalRead(buttonPins[i]) == LOW) { // Button is pressed (active LOW due to pull-up resistor)
+      buttonStates |= (1 << i);
+    }
+  }
+
+if (buttonStates != lastButtonStates) {
+    Serial.println("Button state changed");
+    canMsg.can_id = BASE_CAN_ID + TRANSMIT_OFFSET; // Set the message ID
+    canMsg.data[0] = buttonStates;
+    canMsg.data[1] = 0;
+    canMsg.data[2] = 0;
+    canMsg.data[3] = 0;
+    canMsg.data[4] = tickTimer;
+    mcp2515.sendMessage(&canMsg);
+    lastButtonStates = buttonStates;
+}
+
+  if (millis() - lastUpdateTime >= 100) {
+    tickTimer = (tickTimer + 1) % 256; // Increment and wrap around at 256
+
+    if (mcp2515.readMessage(&canMsg) == MCP2515::ERROR_OK) {
+      Serial.println("CAN message received");
+      if (canMsg.can_id == BASE_CAN_ID + RECEIVE_OFFSET) {
+        // First, set all pixels to the backlight color
+        strip.fill(strip.Color(backlightBrightness, backlightBrightness, backlightBrightness));
+        
+        // Then, change the color of the specific pixels based on the CAN message
+        for (int i = 0; i < NUM_PIXELS; i++) {
+          if (canMsg.data[0] & (1 << i)) {
+            strip.setPixelColor(i, strip.Color(255, 0, 0)); // Red
+          }
+          if (canMsg.data[1] & (1 << i)) {
+            strip.setPixelColor(i, strip.Color(0, 255, 0)); // Green
+          }
+          if (canMsg.data[2] & (1 << i)) {
+            strip.setPixelColor(i, strip.Color(0, 0, 255)); // Blue
+          }
+        }
+        
+        // Finally, update the strip to show the new colors
+        strip.show();
+      } else if (canMsg.can_id == BASE_CAN_ID + BRIGHTNESS_CONTROL_OFFSET) {
+        byte brightness = map(canMsg.data[0], 0, 0x3F, 0, 255);
+        strip.setBrightness(brightness);
+      } else if (canMsg.can_id == BASE_CAN_ID + BACKLIGHT_CONTROL_OFFSET) {
+        backlightBrightness = map(canMsg.data[0], 0, 0x3F, 0, 255);
+        strip.fill(strip.Color(backlightBrightness, backlightBrightness, backlightBrightness));
+        strip.show();
+      } else if (canMsg.can_id == BASE_CAN_ID + CAN_SPEED_CONTROL_OFFSET && 
+                 canMsg.data[0] == 0x2F && canMsg.data[1] == 0x10 && 
+                 canMsg.data[2] == 0x20 && canMsg.data[3] == 0x00 && 
+                 canMsg.data[5] == 0x00 && canMsg.data[6] == 0x00 && canMsg.data[7] == 0x00) {
+        config.canSpeed = canMsg.data[4];
+        configChanged = true;
+      }
+    }
+
+    lastUpdateTime = millis();
+  }
+
+  if (configChanged) {
+    Serial.println("Config changed, writing to EEPROM");
+    EEPROM.put(CONFIG_ADDRESS, config);
+    configChanged = false;
+  }
+}
